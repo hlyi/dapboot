@@ -399,3 +399,7 @@ void dfu_setup(usbd_device* usbd_dev,
 bool dfu_is_idle(void){
     return current_dfu_state == STATE_DFU_IDLE;
 }
+
+uint16_t dfu_state (void){
+    return (current_dfu_status << 8) | current_dfu_state;
+}

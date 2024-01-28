@@ -322,10 +322,16 @@ void target_flash_unlock(void){
     FLASH_KEYR = FLASH_KEYR_KEY2;
     FLASH_MODEKEYP = FLASH_KEYR_KEY1;
     FLASH_MODEKEYP = FLASH_KEYR_KEY2;
+    uint8_t ubuf[1];
+    ubuf[0] = 'U';
+    uart_send_data(ubuf,1);
 }
 
 void target_flash_lock(void) {
     FLASH_CR |= FLASH_CR_LOCK;
+    uint8_t ubuf[1];
+    ubuf[0] = 'L';
+    uart_send_data(ubuf,1);
 }
 
 void target_flash_erase_page(uint32_t adr) {
@@ -336,9 +342,26 @@ void target_flash_erase_page(uint32_t adr) {
     while ( FLASH_SR & FLASH_SR_BSY ) { }
     FLASH_CR &= ~FLASH_CR_PAGE_ERASE;
     *(volatile uint32_t*)0x40022034 = *(volatile uint32_t*)(adr^ 0x00000100);    // taken from example
+    uint8_t ubuf[1];
+    ubuf[0] = 'E';
+    uart_send_data(ubuf,1);
 }
 
 bool target_flash_page ( uint32_t *adr, size_t sz, const uint16_t *buf) {
+    uint8_t msg[18] = {'A','=',0,0,0,0,0,0,0,0,',','C','=',0,0,0,0,'\n'};
+
+    uint32_t msgdata = (uint32_t) adr;
+    for (int i = 0; i < 8; i++) {
+        msg[9-i] = "0123456789ABCDEF"[msgdata & 0xf];
+        msgdata>>=4;
+    }
+    msgdata = (uint32_t) sz;
+    for (int i = 0; i < 4; i++) {
+        msg[16-i] = "0123456789ABCDEF"[msgdata & 0xf];
+        msgdata>>=4;
+    }
+    uart_send_data(msg,18);
+
     /* if not aligned return false */
     uint32_t    prg_adr = (uint32_t) adr;
     if ( (prg_adr & 0x7f) != 0 ) return false;
@@ -382,12 +405,28 @@ bool target_flash_page ( uint32_t *adr, size_t sz, const uint16_t *buf) {
         FLASH_SR  |= FLASH_SR_PGERR | FLASH_SR_WRPRTERR;
         return false;
     }
+    uint8_t ubuf[1];
+    ubuf[0] = 'P';
+    uart_send_data(ubuf,1);
     return true;
 }
 
 bool target_flash_program_array(uint16_t* dest, const uint16_t* data, size_t half_word_count) {
     size_t    cnt;
 
+    uint8_t msg[18] = {'A','=',0,0,0,0,0,0,0,0,',','C','=',0,0,0,0,'\n'};
+
+    uint32_t msgdata = (uint32_t) dest;
+    for (int i = 0; i < 8; i++) {
+        msg[9-i] = "0123456789ABCDEF"[msgdata & 0xf];
+        msgdata>>=4;
+    }
+    msgdata = (uint32_t) half_word_count;
+    for (int i = 0; i < 4; i++) {
+        msg[16-i] = "0123456789ABCDEF"[msgdata & 0xf];
+        msgdata>>=4;
+    }
+    uart_send_data(msg,18);
     if (  ( ((uint32_t) dest ) & 0x7f ) != 0 ) return false;
 
     for ( cnt = 0; cnt < half_word_count ; cnt+=64 ){
@@ -466,11 +505,15 @@ bool target_flash_program_array(uint16_t* dest, const uint16_t* data, size_t hal
 void sys_tick_handler(void)
 {
     static uint8_t count = 0 ;
+    static uint8_t msg[8] = {'.','I','=',0,0,0,0,'\n'};
     count ++;
     if ( count >= ( dfu_is_idle() ? 5 : 1 ) ){
-        uint8_t buf[1];
-        buf[0] = '.';
-        uart_send_data(buf,1);
+        uint16_t msgdata = dfu_state();
+        for (int i = 0; i < 4; i++) {
+            msg[6-i] = "0123456789ABCDEF"[msgdata & 0xf];
+            msgdata>>=4;
+        }
+        uart_send_data(msg,8);
         count = 0;
         gpio_toggle(LED_GPIO_PORT, LED_GPIO_PIN);
     }
