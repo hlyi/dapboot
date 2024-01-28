@@ -152,6 +152,12 @@ ifeq ($(TARGET),BLUEPILL_CH32)
 	LDSCRIPT			:= ./stm32f103/stm32f103x8.ld
 	ARCH				= STM32F1
 endif
+ifeq ($(TARGET),DAPLINK_F103C6)
+	TARGET_COMMON_DIR	:= ./stm32f103
+	TARGET_SPEC_DIR		:= ./stm32f103/daplink_f103c6
+	LDSCRIPT		:= ./stm32f103/stm32f103x6.ld
+	ARCH			= STM32F1
+endif
 
 ifndef ARCH
 $(error Unknown target $(TARGET))
