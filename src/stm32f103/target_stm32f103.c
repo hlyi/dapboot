@@ -27,6 +27,8 @@
 #include <libopencm3/cm3/vector.h>
 #include <libopencm3/stm32/gpio.h>
 #include <libopencm3/cm3/systick.h>
+#include <libopencm3/stm32/usart.h>
+#include <libopencm3/cm3/nvic.h>
 
 #include "dapboot.h"
 #include "dfu.h"
@@ -67,6 +69,69 @@ _Static_assert((FLASH_BASE + FLASH_SIZE_OVERRIDE >= APP_BASE_ADDRESS),
 #define CMD_BOOT 0x4F42UL
 #endif
 
+
+#define UART_BUF_SIZE      1024
+uint8_t ringbuf[UART_BUF_SIZE];
+
+uint32_t ringbuf_rd = 0;
+uint32_t ringbuf_wr = 0;
+void uart_send_data ( uint8_t *buf, int32_t size);
+
+static void target_usart_setup(void)
+{
+    /* Setup GPIO pin GPIO_USART1_TX/GPIO9 on GPIO port A for transmit. */
+    gpio_set_mode(GPIOA, GPIO_MODE_OUTPUT_50_MHZ,
+              GPIO_CNF_OUTPUT_ALTFN_PUSHPULL, GPIO_USART1_TX);
+
+    /* Enable the USART1 interrupt. */
+    nvic_enable_irq(NVIC_USART1_IRQ);
+
+    /* Setup UART parameters. */
+    usart_set_baudrate(USART1, 115200);
+    usart_set_databits(USART1, 8);
+    usart_set_stopbits(USART1, USART_STOPBITS_1);
+    usart_set_mode(USART1, USART_MODE_TX);
+    usart_set_parity(USART1, USART_PARITY_NONE);
+    usart_set_flow_control(USART1, USART_FLOWCONTROL_NONE);
+
+    /* Finally enable the USART. */
+    usart_enable(USART1);
+}
+
+
+void usart1_isr(void)
+{
+    /* Check if we were called because of TXE. */
+    if (((USART_CR1(USART1) & USART_CR1_TXEIE) != 0) &&
+        ((USART_SR(USART1) & USART_SR_TXE) != 0)) {
+        if (ringbuf_rd == ringbuf_wr) {
+            /* Disable the TXE interrupt, it's no longer needed. */
+            USART_CR1(USART1) &= ~USART_CR1_TXEIE;
+        } else {
+            /* Put data into the transmit register. */
+            usart_send(USART1, ringbuf[ringbuf_rd++]);
+            if (ringbuf_rd>=UART_BUF_SIZE) ringbuf_rd = 0;
+        }
+    }
+}
+
+void uart_send_data ( uint8_t *buf, int32_t size)
+{
+    uint32_t wr_nxt;
+    while (size > 0) {
+        wr_nxt = ringbuf_wr +1;
+        if ( wr_nxt >= UART_BUF_SIZE) wr_nxt = 0;
+        if ( wr_nxt == ringbuf_rd ) {
+            // overflow, discard remaning data
+            return;
+        }
+        ringbuf[ringbuf_wr] = *buf++;
+        size--;
+        ringbuf_wr = wr_nxt;
+    }
+    USART_CR1(USART1) |= USART_CR1_TXEIE;
+}
+
 void target_clock_setup(void) {
 #ifdef USE_HSI
     /* Set the system clock to 48MHz from the internal RC oscillator.
@@ -77,6 +142,9 @@ void target_clock_setup(void) {
     /* Set system clock to 72 MHz from an external crystal */
     rcc_clock_setup_in_hse_8mhz_out_72mhz();
 #endif
+    /* Enable clocks for GPIO port A (for GPIO_USART1_TX) and USART1. */
+    rcc_periph_clock_enable(RCC_GPIOA);
+    rcc_periph_clock_enable(RCC_USART1);
 }
 
 void target_gpio_setup(void) {
@@ -115,7 +183,7 @@ void target_gpio_setup(void) {
         }
         gpio_set_mode(LED_GPIO_PORT, mode, conf, LED_GPIO_PIN);
 
-	/* add systick for LED blinking */
+        /* add systick for LED blinking */
         systick_set_clocksource(STK_CSR_CLKSOURCE_AHB_DIV8);
         systick_set_reload(899999);
         systick_interrupt_enable();
@@ -160,6 +228,8 @@ void target_gpio_setup(void) {
                       GPIO_CNF_OUTPUT_PUSHPULL, GPIO12);
     }
 #endif
+
+    target_usart_setup();
 }
 
 const usbd_driver* target_usb_init(void) {
@@ -260,6 +330,17 @@ bool target_flash_program_array(uint16_t* dest, const uint16_t* data, size_t hal
     static uint16_t* erase_start;
     static uint16_t* erase_end;
 
+    {
+        uint8_t buf[8];
+        size_t sz = half_word_count;
+        buf[0] = 'S';
+        buf[7] = '|';
+        for ( int i = 0; i < 6; i++) {
+            buf[6-i] = '0' + sz % 10;
+            sz /= 10;
+        }
+        uart_send_data(buf,8);
+    }
     const uint16_t* flash_end = get_flash_end();
     while (half_word_count > 0) {
         /* Avoid writing past the end of flash */
@@ -293,6 +374,9 @@ void sys_tick_handler(void)
     static uint8_t count = 0 ;
     count ++;
     if ( count >= ( dfu_is_idle() ? 5 : 1 ) ){
+        uint8_t buf[1];
+        buf[0] = '.';
+        uart_send_data(buf,1);
         count = 0;
         gpio_toggle(LED_GPIO_PORT, LED_GPIO_PIN);
     }
